@@ -1,7 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-const TEABLE_BASE = process.env.TEABLE_BASE!;
+// Make sure any trailing slashes in the env variable are cleaned up
+const TEABLE_BASE = process.env.TEABLE_BASE!.replace(/\/$/, '');
 const TEABLE_TOKEN = process.env.TEABLE_TOKEN!;
 
 async function teable(path: string, init?: RequestInit) {
@@ -156,56 +157,15 @@ function buildMcpServer() {
   return server;
 }
 
-// Global state to link SSE GET streams with incoming POST messages
-let sseMessageReceiver: ((message: any) => void) | null = null;
-
-// Handle SSE Connection (GET)
-export async function GET(req: Request) {
-  const stream = new ReadableStream({
-    start(controller) {
-      const url = new URL(req.url);
-      controller.enqueue(new TextEncoder().encode(`event: endpoint\ndata: ${url.pathname}\n\n`));
-
-      const server = buildMcpServer();
-      const transport = {
-        onmessage: undefined as any,
-        onclose: undefined as any,
-        onerror: undefined as any,
-        start: async () => {},
-        close: async () => {},
-        send: async (message: any) => {
-          controller.enqueue(new TextEncoder().encode(`event: message\ndata: ${JSON.stringify(message)}\n\n`));
-        }
-      };
-
-      server.connect(transport as any).then(() => {
-        sseMessageReceiver = transport.onmessage;
-      });
-    }
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive"
-    }
-  });
-}
-
-// Handle Incoming Messages (POST)
+// Solid HTTP handler that patiently waits for Teable's response
 export async function POST(req: Request) {
   const body = await req.json();
-
-  // Route through active SSE stream if it exists
-  if (sseMessageReceiver) {
-    sseMessageReceiver(body);
-    return new Response("Accepted", { status: 202 });
-  }
-
-  // Fallback: If using "Streamable HTTP"
   const server = buildMcpServer();
-  let responseMessage = null;
+  
+  let resolveResponse: (value: any) => void;
+  const responsePromise = new Promise((resolve) => {
+    resolveResponse = resolve;
+  });
   
   const transport = {
     onmessage: undefined as any,
@@ -214,13 +174,19 @@ export async function POST(req: Request) {
     start: async () => {},
     close: async () => {},
     send: async (message: any) => {
-      responseMessage = message;
+      resolveResponse(message);
     }
   };
 
   await server.connect(transport as any);
-  if (transport.onmessage) transport.onmessage(body);
+  if (transport.onmessage) {
+    transport.onmessage(body);
+  }
   
-  await new Promise(r => setTimeout(r, 10)); // Allow microtask to process
+  // Vercel will wait right here until Teable sends the data back
+  const responseMessage = await responsePromise;
   return Response.json(responseMessage);
 }
+
+// Fallback just in case FuseBase sends a ping
+export const GET = POST;
