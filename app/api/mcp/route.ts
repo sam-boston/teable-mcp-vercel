@@ -1,5 +1,3 @@
-export const runtime = "edge";
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
@@ -27,7 +25,6 @@ function buildMcpServer() {
     { capabilities: { tools: {} } }
   );
 
-  // 1. Tell MCP what tools are available
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: [
@@ -105,7 +102,6 @@ function buildMcpServer() {
     };
   });
 
-  // 2. Handle the tool execution
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     
@@ -160,54 +156,71 @@ function buildMcpServer() {
   return server;
 }
 
+// Global state to link SSE GET streams with incoming POST messages
+let sseMessageReceiver: ((message: any) => void) | null = null;
+
+// Handle SSE Connection (GET)
 export async function GET(req: Request) {
-  const upgrade = req.headers.get("upgrade") || "";
-  if (upgrade.toLowerCase() !== "websocket") {
-    return new Response("Expected a WebSocket request", { status: 400 });
+  const stream = new ReadableStream({
+    start(controller) {
+      const url = new URL(req.url);
+      controller.enqueue(new TextEncoder().encode(`event: endpoint\ndata: ${url.pathname}\n\n`));
+
+      const server = buildMcpServer();
+      const transport = {
+        onmessage: undefined as any,
+        onclose: undefined as any,
+        onerror: undefined as any,
+        start: async () => {},
+        close: async () => {},
+        send: async (message: any) => {
+          controller.enqueue(new TextEncoder().encode(`event: message\ndata: ${JSON.stringify(message)}\n\n`));
+        }
+      };
+
+      server.connect(transport as any).then(() => {
+        sseMessageReceiver = transport.onmessage;
+      });
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    }
+  });
+}
+
+// Handle Incoming Messages (POST)
+export async function POST(req: Request) {
+  const body = await req.json();
+
+  // Route through active SSE stream if it exists
+  if (sseMessageReceiver) {
+    sseMessageReceiver(body);
+    return new Response("Accepted", { status: 202 });
   }
 
-  // @ts-ignore Edge runtime provides WebSocketPair
-  const { 0: client, 1: serverSocket } = new WebSocketPair();
-
-  const mcpServer = buildMcpServer();
+  // Fallback: If using "Streamable HTTP"
+  const server = buildMcpServer();
+  let responseMessage = null;
   
-  // Custom transport to bridge Vercel Edge WebSockets to MCP
   const transport = {
-    onclose: undefined as (() => void) | undefined,
-    onerror: undefined as ((error: Error) => void) | undefined,
-    onmessage: undefined as ((message: any) => void) | undefined,
-    start: async () => {
-      serverSocket.accept();
-    },
-    close: async () => {
-      serverSocket.close();
-    },
+    onmessage: undefined as any,
+    onclose: undefined as any,
+    onerror: undefined as any,
+    start: async () => {},
+    close: async () => {},
     send: async (message: any) => {
-      serverSocket.send(JSON.stringify(message));
+      responseMessage = message;
     }
   };
 
-  serverSocket.addEventListener("message", (event: any) => {
-    try {
-      const message = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-      if (transport.onmessage) transport.onmessage(message);
-    } catch (e) {
-      if (transport.onerror) transport.onerror(e as Error);
-    }
-  });
-
-  serverSocket.addEventListener("close", () => {
-    if (transport.onclose) transport.onclose();
-  });
-
-  serverSocket.addEventListener("error", (error: any) => {
-    if (transport.onerror) transport.onerror(error);
-  });
-
-  // @ts-ignore
-  mcpServer.connect(transport);
-
-  return new Response(null, { status: 101, webSocket: client } as any);
+  await server.connect(transport as any);
+  if (transport.onmessage) transport.onmessage(body);
+  
+  await new Promise(r => setTimeout(r, 10)); // Allow microtask to process
+  return Response.json(responseMessage);
 }
-
-export const POST = GET;
