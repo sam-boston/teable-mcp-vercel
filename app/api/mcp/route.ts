@@ -1,8 +1,8 @@
-
 export const runtime = "edge";
 
-import { Server } from "@modelcontextprotocol/sdk/server/index";
-import { WebSocketServerTransport } from "@modelcontextprotocol/sdk/server/websocket";
+// Notice we keep the .js here because Next.js requires it for NPM ESM module resolution, 
+// but we completely removed the hallucinated WebSocket import.
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 const TEABLE_BASE = process.env.TEABLE_BASE!;
 const TEABLE_TOKEN = process.env.TEABLE_TOKEN!;
@@ -44,7 +44,7 @@ function buildMcpServer() {
         required: ["tableId"]
       }
     },
-    async (args) => {
+    async (args: any) => {
       const url = new URL(`/api/table/${args.tableId}/record`, TEABLE_BASE);
       if (args.take) url.searchParams.set("take", String(args.take));
       if (args.skip) url.searchParams.set("skip", String(args.skip));
@@ -76,7 +76,7 @@ function buildMcpServer() {
         required: ["tableId", "records"]
       }
     },
-    async (args) => {
+    async (args: any) => {
       const data = await teable(`/api/table/${args.tableId}/record`, {
         method: "POST",
         body: JSON.stringify({ records: args.records })
@@ -109,7 +109,7 @@ function buildMcpServer() {
         required: ["tableId", "records"]
       }
     },
-    async (args) => {
+    async (args: any) => {
       const data = await teable(`/api/table/${args.tableId}/record`, {
         method: "PATCH",
         body: JSON.stringify({ records: args.records })
@@ -131,7 +131,7 @@ function buildMcpServer() {
         required: ["tableId", "ids"]
       }
     },
-    async (args) => {
+    async (args: any) => {
       const data = await teable(`/api/table/${args.tableId}/record`, {
         method: "DELETE",
         body: JSON.stringify({ ids: args.ids })
@@ -149,12 +149,46 @@ export async function GET(req: Request) {
     return new Response("Expected a WebSocket request", { status: 400 });
   }
 
-  // Edge runtime provides WebSocketPair
-  // @ts-ignore
+  // @ts-ignore Edge runtime provides WebSocketPair
   const { 0: client, 1: serverSocket } = new WebSocketPair();
 
   const mcpServer = buildMcpServer();
-  const transport = new WebSocketServerTransport(serverSocket);
+  
+  // Create a custom transport to bridge Vercel Edge WebSockets to MCP
+  const transport = {
+    onclose: undefined as (() => void) | undefined,
+    onerror: undefined as ((error: Error) => void) | undefined,
+    onmessage: undefined as ((message: any) => void) | undefined,
+    start: async () => {
+      serverSocket.accept();
+    },
+    close: async () => {
+      serverSocket.close();
+    },
+    send: async (message: any) => {
+      serverSocket.send(JSON.stringify(message));
+    }
+  };
+
+  serverSocket.addEventListener("message", (event: any) => {
+    try {
+      const message = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+      if (transport.onmessage) transport.onmessage(message);
+    } catch (e) {
+      if (transport.onerror) transport.onerror(e as Error);
+    }
+  });
+
+  serverSocket.addEventListener("close", () => {
+    if (transport.onclose) transport.onclose();
+  });
+
+  serverSocket.addEventListener("error", (error: any) => {
+    if (transport.onerror) transport.onerror(error);
+  });
+
+  // Connect the MCP server using our custom edge transport
+  // @ts-ignore - bypassing strict type checking for the custom transport
   mcpServer.connect(transport);
 
   return new Response(null, { status: 101, webSocket: client } as any);
