@@ -1,8 +1,7 @@
 export const runtime = "edge";
 
-// Notice we keep the .js here because Next.js requires it for NPM ESM module resolution, 
-// but we completely removed the hallucinated WebSocket import.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const TEABLE_BASE = process.env.TEABLE_BASE!;
 const TEABLE_TOKEN = process.env.TEABLE_TOKEN!;
@@ -28,117 +27,135 @@ function buildMcpServer() {
     { capabilities: { tools: {} } }
   );
 
-  server.tool(
-    {
-      name: "teable_get_records",
-      description: "List Teable records from a table",
-      inputSchema: {
-        type: "object",
-        properties: {
-          tableId: { type: "string" },
-          take: { type: "number" },
-          skip: { type: "number" },
-          fieldKeyType: { type: "string", enum: ["name", "id", "dbFieldName"] },
-          cellFormat: { type: "string", enum: ["json", "text"] }
-        },
-        required: ["tableId"]
-      }
-    },
-    async (args: any) => {
-      const url = new URL(`/api/table/${args.tableId}/record`, TEABLE_BASE);
-      if (args.take) url.searchParams.set("take", String(args.take));
-      if (args.skip) url.searchParams.set("skip", String(args.skip));
-      if (args.fieldKeyType) url.searchParams.set("fieldKeyType", args.fieldKeyType);
-      if (args.cellFormat) url.searchParams.set("cellFormat", args.cellFormat);
-      const data = await teable(url.pathname + url.search, { method: "GET" });
-      return { content: [{ type: "json", json: data }] };
-    }
-  );
-
-  server.tool(
-    {
-      name: "teable_create_records",
-      description: "Create one or more records",
-      inputSchema: {
-        type: "object",
-        properties: {
-          tableId: { type: "string" },
-          records: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: { fields: { type: "object" } },
-              required: ["fields"]
+  // 1. Tell MCP what tools are available
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+      tools: [
+        {
+          name: "teable_get_records",
+          description: "List Teable records from a table",
+          inputSchema: {
+            type: "object",
+            properties: {
+              tableId: { type: "string" },
+              take: { type: "number" },
+              skip: { type: "number" },
+              fieldKeyType: { type: "string", enum: ["name", "id", "dbFieldName"] },
+              cellFormat: { type: "string", enum: ["json", "text"] }
             },
-            minItems: 1
+            required: ["tableId"]
           }
         },
-        required: ["tableId", "records"]
-      }
-    },
-    async (args: any) => {
-      const data = await teable(`/api/table/${args.tableId}/record`, {
-        method: "POST",
-        body: JSON.stringify({ records: args.records })
-      });
-      return { content: [{ type: "json", json: data }] };
-    }
-  );
-
-  server.tool(
-    {
-      name: "teable_update_records",
-      description: "Update one or more records",
-      inputSchema: {
-        type: "object",
-        properties: {
-          tableId: { type: "string" },
-          records: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                id: { type: "string" },
-                fields: { type: "object" }
-              },
-              required: ["id", "fields"]
+        {
+          name: "teable_create_records",
+          description: "Create one or more records",
+          inputSchema: {
+            type: "object",
+            properties: {
+              tableId: { type: "string" },
+              records: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { fields: { type: "object" } },
+                  required: ["fields"]
+                },
+                minItems: 1
+              }
             },
-            minItems: 1
+            required: ["tableId", "records"]
           }
         },
-        required: ["tableId", "records"]
-      }
-    },
-    async (args: any) => {
-      const data = await teable(`/api/table/${args.tableId}/record`, {
-        method: "PATCH",
-        body: JSON.stringify({ records: args.records })
-      });
-      return { content: [{ type: "json", json: data }] };
-    }
-  );
-
-  server.tool(
-    {
-      name: "teable_delete_records",
-      description: "Delete one or more records",
-      inputSchema: {
-        type: "object",
-        properties: {
-          tableId: { type: "string" },
-          ids: { type: "array", items: { type: "string" }, minItems: 1 }
+        {
+          name: "teable_update_records",
+          description: "Update one or more records",
+          inputSchema: {
+            type: "object",
+            properties: {
+              tableId: { type: "string" },
+              records: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    fields: { type: "object" }
+                  },
+                  required: ["id", "fields"]
+                },
+                minItems: 1
+              }
+            },
+            required: ["tableId", "records"]
+          }
         },
-        required: ["tableId", "ids"]
-      }
-    },
-    async (args: any) => {
-      const data = await teable(`/api/table/${args.tableId}/record`, {
-        method: "DELETE",
-        body: JSON.stringify({ ids: args.ids })
-      });
-      return { content: [{ type: "json", json: data }] };
+        {
+          name: "teable_delete_records",
+          description: "Delete one or more records",
+          inputSchema: {
+            type: "object",
+            properties: {
+              tableId: { type: "string" },
+              ids: { type: "array", items: { type: "string" }, minItems: 1 }
+            },
+            required: ["tableId", "ids"]
+          }
+        }
+      ]
+    };
+  });
+
+  // 2. Handle the tool execution
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    
+    if (!args || typeof args !== "object") {
+      throw new Error("Invalid arguments provided.");
     }
-  );
+
+    try {
+      if (name === "teable_get_records") {
+        const url = new URL(`/api/table/${args.tableId}/record`, TEABLE_BASE);
+        if (args.take) url.searchParams.set("take", String(args.take));
+        if (args.skip) url.searchParams.set("skip", String(args.skip));
+        if (args.fieldKeyType) url.searchParams.set("fieldKeyType", args.fieldKeyType as string);
+        if (args.cellFormat) url.searchParams.set("cellFormat", args.cellFormat as string);
+        const data = await teable(url.pathname + url.search, { method: "GET" });
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      }
+
+      if (name === "teable_create_records") {
+        const data = await teable(`/api/table/${args.tableId}/record`, {
+          method: "POST",
+          body: JSON.stringify({ records: args.records })
+        });
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      }
+
+      if (name === "teable_update_records") {
+        const data = await teable(`/api/table/${args.tableId}/record`, {
+          method: "PATCH",
+          body: JSON.stringify({ records: args.records })
+        });
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      }
+
+      if (name === "teable_delete_records") {
+        const data = await teable(`/api/table/${args.tableId}/record`, {
+          method: "DELETE",
+          body: JSON.stringify({ ids: args.ids })
+        });
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      }
+
+      throw new Error(`Tool not found: ${name}`);
+    } catch (error: any) {
+      return {
+        content: [{ type: "text", text: `API Error: ${error.message}` }],
+        isError: true
+      };
+    }
+  });
 
   return server;
 }
@@ -154,7 +171,7 @@ export async function GET(req: Request) {
 
   const mcpServer = buildMcpServer();
   
-  // Create a custom transport to bridge Vercel Edge WebSockets to MCP
+  // Custom transport to bridge Vercel Edge WebSockets to MCP
   const transport = {
     onclose: undefined as (() => void) | undefined,
     onerror: undefined as ((error: Error) => void) | undefined,
@@ -187,8 +204,7 @@ export async function GET(req: Request) {
     if (transport.onerror) transport.onerror(error);
   });
 
-  // Connect the MCP server using our custom edge transport
-  // @ts-ignore - bypassing strict type checking for the custom transport
+  // @ts-ignore
   mcpServer.connect(transport);
 
   return new Response(null, { status: 101, webSocket: client } as any);
