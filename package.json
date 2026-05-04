@@ -9,9 +9,12 @@
     "start": "next start"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.7.0",
+    "@modelcontextprotocol/sdk": "^0.6.0",
     "next": "14.2.13",
     "react": "18.2.0",
-    "react-dom": "18.2.0"
+    "react-dom": "18.2.0",
+    "typescript": "^5.2.2",
+    "@types/node": "^20.8.10",
+    "@types/react": "^18.2.37"
   }
 }
