@@ -1,6 +1,6 @@
 export const runtime = "edge";
 
-import { Server } from "@modelcontextprotocol/sdk/server"; 
+import { Server } from "@modelcontextprotocol/sdk/server/index";
 import { WebSocketServerTransport } from "@modelcontextprotocol/sdk/server/websocket";
 
 const TEABLE_BASE = process.env.TEABLE_BASE!;
